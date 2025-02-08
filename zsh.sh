@@ -1,37 +1,138 @@
 #!/bin/bash
+set -e
 
-# 更新包列表并安装zsh
-echo "安装 zsh..."
-sudo apt update
-sudo apt install -y zsh
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+NC='\033[0m'
 
-# 安装 Oh My Zsh
-echo "安装 Oh My Zsh..."
-sh -c "$(curl -fsSL https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
+# --------------------- 包管理器检测 ---------------------
+PM=""
+SUDO="sudo"
+[ "$(id -u)" -eq 0 ] && SUDO=""  # root用户不需要sudo
 
-# 安装 Powerlevel10k 主题
-echo "安装 Powerlevel10k 主题..."
-git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k
-sed -i 's/^ZSH_THEME=.*/ZSH_THEME="powerlevel10k\/powerlevel10k"/' ~/.zshrc
+# 检测包管理器优先级: apt-get -> dnf -> yum
+if command -v apt-get &>/dev/null; then
+    PM="apt-get"
+elif command -v dnf &>/dev/null; then
+    PM="dnf"
+elif command -v yum &>/dev/null; then
+    PM="yum"
+else
+    echo -e "${RED}错误：未找到支持的包管理器 (apt-get/dnf/yum)${NC}"
+    exit 1
+fi
 
-# 安装 autojump
-echo "安装 autojump..."
-sudo apt install -y autojump
-echo '. /usr/share/autojump/autojump.sh' >> ~/.zshrc
+# --------------------- 依赖检测函数 ---------------------
+is_installed() {
+    local pkg="$1"
+    case $PM in
+        apt-get)
+            dpkg -s "$pkg" &>/dev/null
+            ;;
+        dnf|yum)
+            rpm -q "$pkg" &>/dev/null
+            ;;
+        *)
+            echo -e "${RED}错误：不支持的包管理器${NC}"
+            return 1
+            ;;
+    esac
+}
 
-# 安装 fast-syntax-highlighting 插件
-echo "安装 fast-syntax-highlighting 插件..."
-git clone https://github.com/z-shell/F-Sy-H.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/F-Sy-H
-sed -i '/^plugins=/ s/)/ F-Sy-H)/' ~/.zshrc
+# --------------------- 基础依赖安装 ---------------------
+echo -e "${YELLOW}检查系统依赖...${NC}"
+for pkg in zsh curl git; do
+    if is_installed "$pkg"; then
+        echo -e "${GREEN}✓ ${pkg} 已安装${NC}"
+    else
+        echo -e "${YELLOW}正在安装 ${pkg}...${NC}"
+        $SUDO $PM install -y "$pkg"
+    fi
+done
 
-# 安装 zsh-autosuggestions 插件
-echo "安装 zsh-autosuggestions 插件..."
-git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-sed -i '/^plugins=/ s/)/ zsh-autosuggestions)/' ~/.zshrc
+# --------------------- autojump智能安装 ---------------------
+install_autojump() {
+    local pkg_name="autojump"
+    
+    # 特殊处理RHEL系
+    if [[ "$PM" == "dnf" || "$PM" == "yum" ]]; then
+        if ! is_installed "epel-release"; then
+            echo -e "${YELLOW}安装EPEL源...${NC}"
+            $SUDO $PM install -y epel-release
+        fi
+        pkg_name="autojump-zsh"
+    fi
 
-# 应用 zsh 配置
-echo "更新 zsh 配置..."
-source ~/.zshrc
+    if is_installed "$pkg_name"; then
+        echo -e "${GREEN}✓ ${pkg_name} 已安装${NC}"
+    else
+        echo -e "${YELLOW}正在安装 ${pkg_name}...${NC}"
+        $SUDO $PM install -y "$pkg_name"
+    fi
+}
+install_autojump
 
-# 提示完成
-echo "zsh 安装和配置完成！请重启终端以应用所有更改。"
+# --------------------- oh-my-zsh安装 ---------------------
+OHMYZSH_DIR="$HOME/.oh-my-zsh"
+if [ -d "$OHMYZSH_DIR" ]; then
+    echo -e "${GREEN}✓ oh-my-zsh 已安装${NC}"
+else
+    echo -e "${YELLOW}正在安装 oh-my-zsh...${NC}"
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+fi
+
+# --------------------- 插件安装 ---------------------
+mkdir -p "$HOME/.oh-my-zsh/custom/plugins"
+function clone_plugin() {
+    local repo="$1"
+    local name=$(basename "$repo" .git)
+    
+    if [ ! -d "${HOME}/.oh-my-zsh/custom/plugins/${name}" ]; then
+        echo -e "${YELLOW}安装插件: ${name}...${NC}"
+        git clone --depth=1 "$repo" "${HOME}/.oh-my-zsh/custom/plugins/${name}"
+    else
+        echo -e "${GREEN}✓ ${name} 已安装${NC}"
+    fi
+}
+
+clone_plugin "https://github.com/zsh-users/zsh-autosuggestions"
+clone_plugin "https://github.com/zdharma-continuum/fast-syntax-highlighting"
+
+# --------------------- 配置文件修改 ---------------------
+config_zshrc() {
+    local config_file="$HOME/.zshrc"
+    
+    # 插件管理
+    local plugins=(git autojump zsh-autosuggestions fast-syntax-highlighting)
+    if grep -q "^plugins=" "$config_file"; then
+        existing_plugins=$(grep "^plugins=" "$config_file" | sed -E 's/plugins=\((.*)\)/\1/')
+        all_plugins=($(echo "$existing_plugins ${plugins[*]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+        sed -i.bak "s/^plugins=.*/plugins=(${all_plugins[*]})/" "$config_file"
+    else
+        echo "plugins=(${plugins[*]})" >> "$config_file"
+    fi
+
+    # 智能添加配置
+    function add_config {
+        local pattern="$1"
+        local line="$2"
+        if ! grep -q "$pattern" "$config_file"; then
+            echo "$line" >> "$config_file"
+            echo -e "${YELLOW}添加配置: ${line}${NC}"
+        else
+            echo -e "${GREEN}✓ 配置已存在: ${pattern}${NC}"
+        fi
+    }
+
+    add_config "FAST_HIGHLIGHT" "source \$ZSH_CUSTOM/plugins/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh"
+    add_config "ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE" "ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=240'"
+}
+config_zshrc
+
+# --------------------- 完成提示 ---------------------
+echo -e "\n${GREEN}✅ 安装完成！请执行以下命令：${NC}"
+echo "source ~/.zshrc"
+echo "chsh -s $(which zsh)"
+echo -e "\n推荐直接运行: ${YELLOW}exec zsh${NC} 立即生效\n"
