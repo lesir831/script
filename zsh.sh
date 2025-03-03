@@ -55,7 +55,7 @@ done
 # --------------------- autojump智能安装 ---------------------
 install_autojump() {
     local pkg_name="autojump"
-    
+  
     # 特殊处理RHEL系
     if [[ "$PM" == "dnf" || "$PM" == "yum" ]]; then
         if ! is_installed "epel-release"; then
@@ -88,7 +88,7 @@ mkdir -p "$HOME/.oh-my-zsh/custom/plugins"
 function clone_plugin() {
     local repo="$1"
     local name=$(basename "$repo" .git)
-    
+  
     if [ ! -d "${HOME}/.oh-my-zsh/custom/plugins/${name}" ]; then
         echo -e "${YELLOW}安装插件: ${name}...${NC}"
         git clone --depth=1 "$repo" "${HOME}/.oh-my-zsh/custom/plugins/${name}"
@@ -103,7 +103,7 @@ clone_plugin "https://github.com/zdharma-continuum/fast-syntax-highlighting"
 # --------------------- 配置文件修改 ---------------------
 config_zshrc() {
     local config_file="$HOME/.zshrc"
-    
+  
     # 插件管理
     local plugins=(git autojump zsh-autosuggestions fast-syntax-highlighting)
     if grep -q "^plugins=" "$config_file"; then
@@ -131,8 +131,33 @@ config_zshrc() {
 }
 config_zshrc
 
+# --------------------- 设置zsh为默认shell ---------------------
+current_shell=$(getent passwd $USER | cut -d: -f7)
+zsh_path=$(which zsh)
+
+if [ "$current_shell" != "$zsh_path" ]; then
+    echo -e "${YELLOW}设置zsh为默认shell...${NC}"
+    
+    # 针对root用户的特殊处理
+    if [ "$(id -u)" -eq 0 ]; then
+        # 直接修改/etc/passwd文件
+        sed -i "s|^root:.*$|root:x:0:0:root:/root:$zsh_path|" /etc/passwd
+        echo -e "${GREEN}✓ root用户的默认shell已更改为zsh${NC}"
+    else
+        # 普通用户使用chsh命令
+        $SUDO chsh -s "$zsh_path" "$USER"
+        echo -e "${GREEN}✓ zsh已设置为默认shell${NC}"
+    fi
+else
+    echo -e "${GREEN}✓ zsh已经是默认shell${NC}"
+fi
+
 # --------------------- 完成提示 ---------------------
-echo -e "\n${GREEN}✅ 安装完成！请执行以下命令：${NC}"
-echo "source ~/.zshrc"
-echo "chsh -s $(which zsh)"
-echo -e "\n推荐直接运行: ${YELLOW}exec zsh${NC} 立即生效\n"
+echo -e "\n${GREEN}✅ 安装完成！${NC}"
+echo -e "所有配置已设置好，将在下次登录时生效。"
+echo -e "如需立即切换到zsh，请运行:\n"
+echo -e "${YELLOW}exec zsh${NC}"
+
+# 自动切换到zsh并应用配置
+echo -e "${GREEN}切换到zsh并应用新配置...${NC}"
+exec zsh -l
